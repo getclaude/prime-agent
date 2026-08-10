@@ -86,6 +86,12 @@ interface BuiltinSlashCommandAlias {
 
 const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "settings", description: "Open settings menu" },
+	{
+		name: "approvals",
+		description: "Configure model-based approvals (auto mode) for tool calls",
+		argumentHint: "[status|off|on|ask|block|allow]",
+		takesArgument: true,
+	},
 	{ name: "model", description: "Select model (opens selector UI)", argumentHint: "[search]", takesArgument: true },
 	{ name: "effort", description: "Select reasoning/thinking level (opens selector UI)", argumentHint: "[level]" },
 	{ name: "fast", description: "Toggle OpenAI Fast mode" },

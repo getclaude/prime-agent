@@ -5,6 +5,9 @@
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Changed `Ctrl+C` to clear a nonempty idle prompt before offering to exit.
+- Added `/approvals`: model-based action gating (auto mode). A separate approval model reviews every tool call before it runs, using a fast single-token filter with a reasoning pass only for flagged actions, and a reasoning-blind transcript (user messages and tool calls only). Configure the mode, approval model, which tools are gated (multi-select), and what happens when the reviewer is unsure (`ask`, `block`, or `allow`) from the panel or with `/approvals [status|off|on|ask|block|allow]`. A refused call hands the reviewer's reason back to the agent instead of prompting. Defaults to off.
+- Removed the outdated extra-usage warning for Anthropic subscription auth.
 
 ## [0.7.1] - 2026-08-07
 

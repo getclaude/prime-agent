@@ -170,8 +170,9 @@ import {
 	formatUpdateAvailableNotice,
 } from "../shared/startup-notices.js";
 import { AGENT_ACTIVITY_LABELS, AgentActivityTracker, formatTokenCount } from "./agent-activity.js";
-import { type AuthenticationResult, getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "./auth-flows.js";
+import { type AuthenticationResult, ProviderAuthFlows } from "./auth-flows.js";
 import { AgentMessageComponent } from "./components/agent-message.js";
+import { ApprovalsSelectorComponent } from "./components/approvals-selector.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -893,8 +894,6 @@ export class InteractiveMode {
 	private escapeRepeatExpiresAt = 0;
 	private escapeRepeatTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 	private isRestoringQueuedEditorText = false;
-	private anthropicSubscriptionWarningShown = false;
-
 	// Status line tracking (for mutating immediately-sequential status updates)
 	private lastStatusSpacer: Spacer | undefined = undefined;
 	private lastStatusText: Text | undefined = undefined;
@@ -1340,6 +1339,7 @@ export class InteractiveMode {
 		if (this.isInitialized) return;
 
 		this.registerSignalHandlers();
+		this.installApprovalPrompter();
 
 		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
 		// fd powers autocomplete, and rg is available for shell commands.
@@ -1648,7 +1648,6 @@ export class InteractiveMode {
 		await this.runStartupOnboarding();
 		showDeferredStartupNotifications();
 		showModelFallbackWarning();
-		void this.maybeWarnAboutAnthropicSubscriptionAuth();
 		void deliverStartupPrompts().then(
 			() => settleStartupPrompts("admitted"),
 			() => settleStartupPrompts("admitted"),
@@ -4636,6 +4635,11 @@ export class InteractiveMode {
 					this.editor.setText("");
 					return;
 				}
+				if (commandName === "approvals") {
+					this.editor.setText("");
+					await this.handleApprovalsCommand(commandArgs);
+					return;
+				}
 				if (commandName === "scoped-models" && !commandArgs) {
 					this.editor.setText("");
 					await this.showModelsSelector();
@@ -6622,6 +6626,10 @@ export class InteractiveMode {
 
 	private handleCtrlC(): void {
 		this.clearEscapeRepeat();
+		if (!this.hasInterruptibleWork() && this.editor.getText().length > 0) {
+			this.clearInputBar();
+			return;
+		}
 		if (this.isCtrlCExitHintVisible()) {
 			void this.shutdown();
 			return;
@@ -7224,6 +7232,99 @@ export class InteractiveMode {
 		return showFullPaneOverlay(this.ui, component, options);
 	}
 
+	/**
+	 * `/approvals` - configure model-based action gating.
+	 *
+	 * No argument opens the panel; `status` prints the current configuration,
+	 * `off|on` sets the mode, and `ask|block|allow` sets the unsure policy.
+	 */
+	private async handleApprovalsCommand(args: string): Promise<void> {
+		const arg = args.trim().toLowerCase();
+		const settings = this.settingsManager.getApprovalSettings();
+
+		if (!arg) {
+			await this.showApprovalsSelector();
+			return;
+		}
+
+		if (arg === "status") {
+			const gated = settings.tools.length === 0 ? "all tools" : settings.tools.join(", ");
+			this.showStatus(
+				`Approvals: ${settings.mode} · model ${settings.model} · gating ${gated} · when unsure ${settings.whenUnsure}`,
+			);
+			return;
+		}
+
+		if (arg === "off" || arg === "on") {
+			this.settingsManager.setApprovalMode(arg);
+			this.showStatus(`Approvals ${arg}`);
+			return;
+		}
+
+		if (arg === "ask" || arg === "block" || arg === "allow") {
+			this.settingsManager.setApprovalWhenUnsure(arg);
+			this.showStatus(`Approvals: when unsure -> ${arg}`);
+			return;
+		}
+
+		this.showError("Usage: /approvals [status|off|on|ask|block|allow]");
+	}
+
+	/**
+	 * Attach this UI as the human approver.
+	 *
+	 * Only takes effect for in-process sessions; over the daemon the connection
+	 * does not expose the seam and approvals use their unattended fallback.
+	 */
+	private installApprovalPrompter(): void {
+		this.agentConnection.setApprovalPrompter?.(async ({ toolName, reason }) => {
+			const detail = reason ? `${reason}\n\n` : "";
+			return await this.showExtensionConfirm("Approve action?", `${detail}Allow the agent to run "${toolName}"?`);
+		});
+	}
+
+	private async showApprovalsSelector(): Promise<void> {
+		const configuredTools = this.settingsManager.getApprovalSettings().tools;
+		let availableTools: string[] = [...configuredTools];
+		try {
+			const state = await this.agentConnection.getState();
+			// Union of live tools and anything already configured, so a tool that
+			// is not loaded right now does not silently drop out of the config.
+			availableTools = [...new Set([...(state.activeToolNames ?? []), ...configuredTools])].sort();
+		} catch {
+			// The panel is still usable without the live tool list.
+		}
+
+		this.showSelector((done) => {
+			const settings = this.settingsManager.getApprovalSettings();
+			const selector = new ApprovalsSelectorComponent(
+				{
+					mode: settings.mode,
+					model: settings.model,
+					whenUnsure: settings.whenUnsure,
+					availableTools,
+					gatedTools: settings.tools,
+				},
+				{
+					onModeChange: (mode) => {
+						this.settingsManager.setApprovalMode(mode);
+					},
+					onModelChange: (model) => {
+						this.settingsManager.setApprovalModel(model);
+					},
+					onWhenUnsureChange: (action) => {
+						this.settingsManager.setApprovalWhenUnsure(action);
+					},
+					onGatedToolsChange: (tools) => {
+						this.settingsManager.setApprovalTools(tools);
+					},
+					onCancel: () => done(),
+				},
+			);
+			return { component: selector, focus: selector };
+		});
+	}
+
 	private async showSettingsSelector(): Promise<void> {
 		let state: AgentConnectionState;
 		try {
@@ -7259,7 +7360,6 @@ export class InteractiveMode {
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
 					fullscreen: this.fullscreenEnabled,
-					warnings: this.settingsManager.getWarnings(),
 				},
 				{
 					onAutoCompactChange: (enabled) => {
@@ -7384,9 +7484,6 @@ export class InteractiveMode {
 					onFullscreenChange: (enabled) => {
 						this.setFullscreenMode(enabled);
 					},
-					onWarningsChange: (warnings) => {
-						this.settingsManager.setWarnings(warnings);
-					},
 					onCancel: () => {
 						done();
 						this.ui.requestRender();
@@ -7466,7 +7563,6 @@ export class InteractiveMode {
 		this.showStatus(`Switching model: ${model.id}`);
 		await this.applySelectedModel(model);
 		this.showStatus(`Model: ${model.id}`);
-		void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 		this.checkDaxnutsEasterEgg(model);
 	}
 
@@ -7624,23 +7720,6 @@ export class InteractiveMode {
 		const models = await this.getModelCandidates();
 		const uniqueProviders = new Set(models.map((m) => m.provider));
 		this.footerDataProvider.setAvailableProviderCount(uniqueProviders.size);
-	}
-
-	private async maybeWarnAboutAnthropicSubscriptionAuth(
-		model: Model<any> | undefined = this.getCurrentModel(),
-	): Promise<void> {
-		if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {
-			return;
-		}
-		if (this.anthropicSubscriptionWarningShown) {
-			return;
-		}
-		const warning = await getAnthropicSubscriptionAuthWarning(this.modelRegistry, model);
-		if (!warning) {
-			return;
-		}
-		this.anthropicSubscriptionWarningShown = true;
-		this.showWarning(warning);
 	}
 
 	private getAvailableThinkingLevels(): ThinkingLevel[] {
@@ -8289,9 +8368,6 @@ export class InteractiveMode {
 				await this.updateAvailableProviderCount();
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
-			},
-			onLoginCompleted: () => {
-				void this.maybeWarnAboutAnthropicSubscriptionAuth();
 			},
 		});
 	}

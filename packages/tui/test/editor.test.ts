@@ -555,6 +555,25 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.getText(), "foo ");
 		});
 
+		it("deletes the previous word with Ctrl+Backspace", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.setText("foo bar");
+			editor.handleInput("\x1b[127;5u");
+
+			assert.strictEqual(editor.getText(), "foo ");
+		});
+
+		it("inserts a newline with Ctrl+J", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.setText("first");
+			editor.handleInput("\x1b[106;5u");
+			editor.handleInput("second");
+
+			assert.strictEqual(editor.getText(), "first\nsecond");
+		});
+
 		it("navigates words correctly with Ctrl+Left/Right", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 

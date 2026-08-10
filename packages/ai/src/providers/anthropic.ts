@@ -41,7 +41,17 @@ import {
 	streamFailureMessage,
 	truncateRawPayload,
 } from "../utils/stream-failure.js";
-
+import {
+	applyClaudeCodeOAuthTransform,
+	buildClaudeCodeCompactSystemPrompt,
+	buildStainlessHeaders,
+	CLAUDE_CODE_ENTRYPOINT,
+	CLAUDE_CODE_OAUTH_BETAS,
+	getClaudeCodeBetaOverrides,
+	needsClaudeCodeSystemCompaction,
+	prefixToolName,
+	unprefixToolName,
+} from "./anthropic-oauth-bypass.js";
 import { resolveCloudflareBaseUrl } from "./cloudflare.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { adjustMaxTokensForThinking, buildBaseOptions } from "./simple-options.js";
@@ -77,7 +87,23 @@ function getCacheControl(
 }
 
 // Stealth mode: Mimic Claude Code's tool naming exactly
-const claudeCodeVersion = "2.1.75";
+const claudeCodeVersion = "2.1.217";
+
+function generateUuid(): string {
+	if (typeof globalThis !== "undefined" && typeof globalThis.crypto?.randomUUID === "function") {
+		return globalThis.crypto.randomUUID();
+	}
+	// Fallback for environments without crypto.randomUUID.
+	const bytes = new Uint8Array(16);
+	for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+	bytes[6] = (bytes[6] & 0x0f) | 0x40;
+	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// Stable per-process session id, matching Claude Code's X-Claude-Code-Session-Id.
+const oauthSessionId = generateUuid();
 
 // Claude Code 2.x tool names (canonical casing)
 // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
@@ -522,10 +548,14 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
-			const requestOptions = {
+
+			const requestOptions: Anthropic.RequestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+				// Real Claude Code appends `?beta=true` to /v1/messages; the OAuth
+				// validator cross-references it with the billing entrypoint.
+				...(isOAuth ? { query: { beta: "true" } } : {}),
 			};
 			const response = await client.messages.create({ ...params, stream: true }, requestOptions).asResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -592,7 +622,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							type: "toolCall",
 							id: event.content_block.id,
 							name: isOAuth
-								? fromClaudeCodeName(event.content_block.name, context.tools)
+								? fromClaudeCodeName(unprefixToolName(event.content_block.name), context.tools)
 								: event.content_block.name,
 							arguments: (event.content_block.input as Record<string, any>) ?? {},
 							partialJson: "",
@@ -846,6 +876,22 @@ function isOAuthToken(apiKey: string): boolean {
 	return apiKey.includes("sk-ant-oat");
 }
 
+/**
+ * Build the `anthropic-beta` header for an OAuth request, applying per-model
+ * overrides from the Claude Code bypass (e.g. the effort beta is only valid on
+ * Opus 4.6/4.7 and must be excluded for Sonnet 4.6 and Haiku).
+ */
+function buildOAuthBetaHeader(model: Model<"anthropic-messages">, betaFeatures: string[]): string {
+	const overrides = getClaudeCodeBetaOverrides(model.id);
+	const betas = ["claude-code-20250219", "oauth-2025-04-20", ...CLAUDE_CODE_OAUTH_BETAS, ...betaFeatures].filter(
+		(beta) => !overrides.remove.includes(beta),
+	);
+	for (const beta of overrides.add) {
+		if (!betas.includes(beta)) betas.push(beta);
+	}
+	return [...new Set(betas)].join(",");
+}
+
 function createClient(
 	model: Model<"anthropic-messages">,
 	apiKey: string,
@@ -921,9 +967,13 @@ function createClient(
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
-					"anthropic-beta": ["claude-code-20250219", "oauth-2025-04-20", ...betaFeatures].join(","),
-					"user-agent": `claude-cli/${claudeCodeVersion}`,
+					"anthropic-version": "2023-06-01",
+					"anthropic-beta": buildOAuthBetaHeader(model, betaFeatures),
+					"user-agent": `claude-cli/${claudeCodeVersion} (external, ${CLAUDE_CODE_ENTRYPOINT})`,
 					"x-app": "cli",
+					"x-client-request-id": oauthSessionId,
+					"X-Claude-Code-Session-Id": oauthSessionId,
+					...buildStainlessHeaders(),
 				},
 				model.headers,
 				optionsHeaders,
@@ -959,6 +1009,7 @@ function buildParams(
 	options?: AnthropicOptions,
 	cacheControl?: CacheControlEphemeral,
 ): MessageCreateParamsStreaming {
+	let oauthHostContext: string | undefined;
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
 		messages: convertMessages(context.messages, model, isOAuthToken, cacheControl),
@@ -976,9 +1027,19 @@ function buildParams(
 			},
 		];
 		if (context.systemPrompt) {
+			const systemPrompt = sanitizeSurrogates(context.systemPrompt);
+			let oauthSystemPrompt = systemPrompt;
+			// Opus 5 / Fable 5 subscription classification is sensitive to large
+			// system[] content. Keep the native Prime Agent core plus a compact
+			// OAuth runtime contract there, and send
+			// the complete dynamic host context with the first user turn.
+			if (needsClaudeCodeSystemCompaction(model.id)) {
+				oauthSystemPrompt = buildClaudeCodeCompactSystemPrompt(systemPrompt);
+				oauthHostContext = systemPrompt;
+			}
 			params.system.push({
 				type: "text",
-				text: sanitizeSurrogates(context.systemPrompt),
+				text: oauthSystemPrompt,
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			});
 		}
@@ -1053,6 +1114,20 @@ function buildParams(
 		} else {
 			params.tool_choice = options.toolChoice;
 		}
+	}
+
+	// Claude Code OAuth requests must carry a signed billing header and keep
+	// the identity prefix in system[] so Anthropic bills against the user's
+	// Pro/Max plan instead of "extra usage" credits.
+	if (isOAuthToken) {
+		// Opus 5 / Fable 5 keep the stable classifier-safe prompt in system[]
+		// and receive their complete dynamic host context in the first user turn.
+		applyClaudeCodeOAuthTransform(
+			params,
+			claudeCodeVersion,
+			needsClaudeCodeSystemCompaction(model.id),
+			oauthHostContext,
+		);
 	}
 
 	return params;
@@ -1154,7 +1229,7 @@ function convertMessages(
 					blocks.push({
 						type: "tool_use",
 						id: block.id,
-						name: isOAuthToken ? toClaudeCodeName(block.name) : block.name,
+						name: isOAuthToken ? prefixToolName(toClaudeCodeName(block.name)) : block.name,
 						input: block.arguments ?? {},
 					});
 				}
@@ -1243,7 +1318,7 @@ function convertTools(
 		const schema = tool.parameters as { properties?: unknown; required?: string[] };
 
 		return {
-			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
+			name: isOAuthToken ? prefixToolName(toClaudeCodeName(tool.name)) : tool.name,
 			description: tool.description,
 			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
 			input_schema: {

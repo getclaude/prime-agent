@@ -42,6 +42,7 @@ import type {
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	completeSimple,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	modelsAreEqual,
@@ -82,6 +83,14 @@ import {
 	ORCHESTRATION_HEARTBEAT_SKILL_NAME,
 } from "./agent-observe.js";
 import { flushAgentTraceUpload } from "./agent-traces.js";
+import type { ApprovalDecision } from "./approvals.js";
+import {
+	buildApprovalTranscript,
+	decideApproval,
+	formatApprovalDenial,
+	isToolGated,
+	resolveApprovalOutcome,
+} from "./approvals.js";
 import {
 	addLoginGuidanceToAuthError,
 	formatAuthenticationFailedMessage,
@@ -188,6 +197,10 @@ import {
 	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 	isSessionSlashCommandMessage,
 } from "./messages.js";
+
+/** Callback an attached UI supplies so approvals can escalate to a human. */
+export type ApprovalPrompter = (request: { toolName: string; args: unknown; reason?: string }) => Promise<boolean>;
+
 import type { ModelRegistry } from "./model-registry.js";
 import { throwIfPromptAdmissionCancelled } from "./prompt-admission.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -1161,6 +1174,8 @@ export class AgentSession {
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
+	/** Set by an attached UI so approvals can escalate to a human. */
+	private _approvalPrompter?: ApprovalPrompter;
 	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
 	private _modelSelectEmitQueue: Promise<void> = Promise.resolve();
@@ -1418,8 +1433,134 @@ export class AgentSession {
 	 * registered tool execution to the extension context. Tool call and tool result interception now
 	 * happens here instead of in wrappers.
 	 */
+	/**
+	 * Ask a human to approve a tool call.
+	 *
+	 * Set by an attached UI (interactive mode). When nothing is attached the
+	 * approvals engine falls back to the configured unattended behaviour instead
+	 * of silently running the action.
+	 */
+	setApprovalPrompter(prompter: ApprovalPrompter | undefined): void {
+		this._approvalPrompter = prompter;
+	}
+
+	/**
+	 * Run one approval-model completion using the configured approval model.
+	 *
+	 * Deliberately a separate, small model call: Claude Code runs its transcript
+	 * classifier on a mid-tier model rather than the main one.
+	 */
+	private async _runApprovalModel(
+		modelSpec: string,
+		input: { systemPrompt: string; prompt: string; maxTokens: number; signal?: AbortSignal },
+	): Promise<string> {
+		const slash = modelSpec.indexOf("/");
+		if (slash <= 0) {
+			throw new Error(`Invalid approval model "${modelSpec}" (expected "provider/id")`);
+		}
+		const provider = modelSpec.slice(0, slash);
+		const modelId = modelSpec.slice(slash + 1);
+		const model = this._modelRegistry.find(provider, modelId);
+		if (!model) {
+			throw new Error(`Approval model "${modelSpec}" is not available`);
+		}
+		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) {
+			throw new Error(auth.error);
+		}
+
+		const response = await completeSimple(
+			model,
+			{
+				systemPrompt: input.systemPrompt,
+				messages: [
+					{
+						role: "user" as const,
+						content: [{ type: "text" as const, text: input.prompt }],
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{
+				maxTokens: input.maxTokens,
+				signal: input.signal,
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+			},
+		);
+
+		if (response.stopReason === "error") {
+			throw new Error(response.errorMessage || "approval model error");
+		}
+		return response.content
+			.filter((block): block is TextContent => block.type === "text")
+			.map((block) => block.text)
+			.join("\n")
+			.trim();
+	}
+
+	/**
+	 * Gate a tool call through the approvals engine.
+	 *
+	 * Returns a block result when the action must not run, or undefined to let
+	 * execution continue. Runs before extension `tool_call` handlers so a denied
+	 * action never reaches them.
+	 */
+	private async _checkApproval(
+		toolCall: { id: string; name: string },
+		args: unknown,
+		signal?: AbortSignal,
+	): Promise<{ block: true; reason: string } | undefined> {
+		const settings = this.settingsManager.getApprovalSettings();
+		if (settings.mode === "off") return undefined;
+		if (!isToolGated(toolCall.name, settings.tools)) return undefined;
+
+		let decision: ApprovalDecision;
+		try {
+			decision = await decideApproval(
+				{
+					toolName: toolCall.name,
+					args,
+					cwd: this._cwd,
+					transcript: buildApprovalTranscript(this.agent.state.messages ?? []),
+				},
+				{
+					runner: (input) => this._runApprovalModel(settings.model, { ...input, signal }),
+					signal,
+				},
+			);
+		} catch (error) {
+			// Never fail open: an engine crash is treated as "needs a human".
+			decision = {
+				verdict: "ask",
+				reason: error instanceof Error ? error.message : String(error),
+			};
+		}
+
+		const outcome = resolveApprovalOutcome(decision, settings.whenUnsure, Boolean(this._approvalPrompter));
+
+		if (outcome.action === "allow") return undefined;
+		if (outcome.action === "block") {
+			return { block: true, reason: formatApprovalDenial(toolCall.name, outcome.reason) };
+		}
+
+		const approved = await this._approvalPrompter?.({
+			toolName: toolCall.name,
+			args,
+			reason: outcome.reason,
+		});
+		return approved
+			? undefined
+			: { block: true, reason: formatApprovalDenial(toolCall.name, "the user declined it") };
+	}
+
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+		this.agent.beforeToolCall = async ({ toolCall, args }, signal) => {
+			const blocked = await this._checkApproval(toolCall, args, signal);
+			if (blocked) {
+				return blocked;
+			}
+
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
 				return undefined;

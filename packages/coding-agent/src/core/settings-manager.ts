@@ -4,6 +4,8 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import type { ApprovalMode, ApprovalSettings, ApprovalUnsureAction } from "./approvals.js";
+import { resolveApprovalSettings } from "./approvals.js";
 
 const RECENT_MODELS_LIMIT = 20;
 export const DEFAULT_IDLE_EVICTION_MINUTES = 90;
@@ -66,10 +68,6 @@ export interface MarkdownSettings {
 
 export interface BundledSkillsSettings {
 	websearch?: boolean; // default: true
-}
-
-export interface WarningSettings {
-	anthropicExtraUsage?: boolean; // default: true
 }
 
 export type TransportSetting = Transport;
@@ -139,6 +137,7 @@ export interface Settings {
 	telemetry?: TelemetrySettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	approvals?: ApprovalSettings; // model-based action gating ("auto mode")
 	hideThinkingBlock?: boolean;
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
@@ -162,7 +161,6 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
-	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 }
 
@@ -937,6 +935,45 @@ export class SettingsManager {
 		};
 	}
 
+	// -------------------------------------------------------------------
+	// Approvals (model-based action gating)
+	// -------------------------------------------------------------------
+
+	getApprovalSettings(): Required<ApprovalSettings> {
+		return resolveApprovalSettings(this.settings.approvals);
+	}
+
+	private ensureApprovals(): ApprovalSettings {
+		if (!this.globalSettings.approvals) {
+			this.globalSettings.approvals = {};
+		}
+		return this.globalSettings.approvals;
+	}
+
+	setApprovalMode(mode: ApprovalMode): void {
+		this.ensureApprovals().mode = mode;
+		this.markModified("approvals", "mode");
+		this.save();
+	}
+
+	setApprovalModel(model: string): void {
+		this.ensureApprovals().model = model;
+		this.markModified("approvals", "model");
+		this.save();
+	}
+
+	setApprovalTools(tools: string[]): void {
+		this.ensureApprovals().tools = tools;
+		this.markModified("approvals", "tools");
+		this.save();
+	}
+
+	setApprovalWhenUnsure(action: ApprovalUnsureAction): void {
+		this.ensureApprovals().whenUnsure = action;
+		this.markModified("approvals", "whenUnsure");
+		this.save();
+	}
+
 	getHideThinkingBlock(): boolean {
 		return this.settings.hideThinkingBlock ?? false;
 	}
@@ -1263,15 +1300,5 @@ export class SettingsManager {
 
 	getCodeBlockIndent(): string {
 		return this.settings.markdown?.codeBlockIndent ?? "  ";
-	}
-
-	getWarnings(): WarningSettings {
-		return { ...(this.settings.warnings ?? {}) };
-	}
-
-	setWarnings(warnings: WarningSettings): void {
-		this.globalSettings.warnings = { ...warnings };
-		this.markModified("warnings");
-		this.save();
 	}
 }

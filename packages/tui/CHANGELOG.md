@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added `Ctrl+Backspace` for deleting the previous word and `Ctrl+J` for inserting a newline in text editors.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
