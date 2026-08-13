@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import tempfile
 import time
 import unittest
@@ -10,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from rlm import mcp_base
-from rlm.mcp_base import McpIntegration, McpToolError, NotEnabled
+from rlm.mcp_base import McpDisabled, McpIntegration, McpToolError, NotEnabled
 
 
 def _run(coro):
@@ -143,6 +144,43 @@ class McpIntegrationTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {"DEMO_MCP_TOKEN": "env-secret"}):
             self.assertEqual(_run(EnvIntegration()._resolve_token()), "env-secret")
 
+    def test_configured_bearer_does_not_fall_back_to_stored_credentials(self):
+        self._write_auth(
+            {"type": "oauth", "access": "stored", "refresh": "r", "expires": (time.time() + 3600) * 1000}
+        )
+
+        async def bearer_host(req_type, payload):
+            return {
+                "type": "http",
+                "url": "https://override.test/mcp",
+                "requiresAuth": True,
+                "bearerTokenEnvVar": "MISSING_OVERRIDE_TOKEN",
+                "enabled": True,
+            }
+
+        with mock.patch.object(mcp_base, "host_request", bearer_host), \
+             mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(NotEnabled):
+                _run(_Integration().call_tool("noop", {}))
+
+    def test_catalog_override_cannot_read_stored_credentials(self):
+        self._write_auth(
+            {"type": "oauth", "access": "official", "refresh": "r", "expires": (time.time() + 3600) * 1000}
+        )
+
+        async def override_host(req_type, payload):
+            return {
+                "type": "http",
+                "url": "https://override.test/mcp",
+                "requiresAuth": True,
+                "allowStoredCredentials": False,
+                "enabled": True,
+            }
+
+        with mock.patch.object(mcp_base, "host_request", override_host):
+            with self.assertRaises(NotEnabled):
+                _run(_Integration().call_tool("noop", {}))
+
     def test_empty_structured_result_preserved(self):
         for payload in ({}, []):
             result = type("R", (), {"structuredContent": payload, "content": [], "isError": False})()
@@ -191,6 +229,33 @@ class McpIntegrationTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             Bad()
+
+    def test_accepts_dynamic_server_name(self):
+        self.assertEqual(McpIntegration("configured-server").server, "configured-server")
+
+    def test_explicit_host_disable_wins(self):
+        async def disabled_host(req_type, payload):
+            return {"enabled": False, "url": "https://example.test/mcp"}
+
+        with mock.patch.object(mcp_base, "host_request", disabled_host):
+            with self.assertRaises(McpDisabled):
+                _run(_Integration()._resolve_transport_config())
+
+    def test_tool_filters_hide_and_reject_tools(self):
+        session = _FakeSession(
+            tools=[("read", "", {}), ("write", "", {}), ("delete", "", {})],
+            result=type("R", (), {"structuredContent": {"ok": True}})(),
+        )
+        with self._patch_session(session):
+            integration = _Integration()
+            integration._set_tool_filters(
+                {"enabledTools": ["read", "write"], "disabledTools": ["write"]}
+            )
+            tools = _run(integration.list_tools())
+            self.assertEqual([tool["name"] for tool in tools], ["read"])
+            with self.assertRaises(PermissionError):
+                _run(integration.call_tool("write", {}))
+        self.assertEqual(session.calls, [])
 
     def _run_open_session_with_transport(self, transport):
         """Drive the real _open_session against a fake transport callable.
@@ -252,6 +317,107 @@ class McpIntegrationTest(unittest.TestCase):
 
         self._run_open_session_with_transport(transport)
         self.assertIsNotNone(captured["http_client"])
+
+    def test_anonymous_http_keeps_headers_without_authorization(self):
+        captured = {}
+
+        class _CM:
+            async def __aenter__(self_inner):
+                return ("read", "write", None)
+
+            async def __aexit__(self_inner, *args):
+                return False
+
+        def transport(url, headers=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            return _CM()
+
+        async def anonymous_host(req_type, payload):
+            return {
+                "type": "http",
+                "url": "https://public.test/mcp",
+                "headers": {"X-Static": "1"},
+                "requiresAuth": False,
+                "enabled": True,
+            }
+
+        with mock.patch.object(mcp_base, "host_request", anonymous_host), \
+             mock.patch.object(mcp_base, "_resolve_streamable_http", lambda: transport), \
+             mock.patch("mcp.ClientSession") as session_cls:
+            session = mock.MagicMock()
+            session.initialize = mock.AsyncMock()
+            session.call_tool = mock.AsyncMock(
+                return_value=type("R", (), {"content": [], "structuredContent": None})()
+            )
+            session_cls.return_value.__aenter__ = mock.AsyncMock(return_value=session)
+            session_cls.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+            _run(McpIntegration("public").call_tool("noop", {}))
+
+        self.assertEqual(captured["url"], "https://public.test/mcp")
+        self.assertEqual(captured["headers"], {"X-Static": "1"})
+
+    def test_stdio_uses_official_sdk_transport(self):
+        captured = {}
+
+        class _CM:
+            async def __aenter__(self_inner):
+                return ("read", "write", None)
+
+            async def __aexit__(self_inner, *args):
+                return False
+
+        def stdio_transport(params):
+            captured["params"] = params
+            return _CM()
+
+        async def stdio_host(req_type, payload):
+            return {
+                "type": "stdio",
+                "enabled": True,
+                "command": "demo-server",
+                "args": ["--stdio"],
+                "env": {"DEMO": "1"},
+                "cwd": "/workspace",
+            }
+
+        with mock.patch.object(mcp_base, "host_request", stdio_host), \
+             mock.patch("mcp.client.stdio.stdio_client", stdio_transport), \
+             mock.patch("mcp.ClientSession") as session_cls:
+            session = mock.MagicMock()
+            session.initialize = mock.AsyncMock()
+            session.call_tool = mock.AsyncMock(
+                return_value=type("R", (), {"content": [], "structuredContent": None})()
+            )
+            session_cls.return_value.__aenter__ = mock.AsyncMock(return_value=session)
+            session_cls.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+            _run(McpIntegration("stdio-demo").call_tool("noop", {}))
+
+        params = captured["params"]
+        self.assertEqual(params.command, "demo-server")
+        self.assertEqual(params.args, ["--stdio"])
+        self.assertEqual(params.env, {"DEMO": "1"})
+        self.assertEqual(str(params.cwd), "/workspace")
+
+    def test_real_stdio_server_round_trip(self):
+        fixture = Path(__file__).parent / "fixtures" / "mcp_stdio_server.py"
+
+        async def stdio_host(req_type, payload):
+            return {
+                "type": "stdio",
+                "enabled": True,
+                "command": sys.executable,
+                "args": [str(fixture)],
+            }
+
+        with mock.patch.object(mcp_base, "host_request", stdio_host):
+            integration = McpIntegration("real-stdio")
+            tools = _run(integration.list_tools())
+            self.assertEqual([tool["name"] for tool in tools], ["echo"])
+            self.assertEqual(tools[0]["inputSchema"]["required"], ["text"])
+            result = _run(integration.call_tool("echo", {"text": "hello"}))
+
+        self.assertEqual(result, {"echo": "hello"})
 
     def test_resolve_config_prefers_host_override_and_headers(self):
         async def host_with_override(req_type, payload):

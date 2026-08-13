@@ -335,16 +335,31 @@ Built-in integrations for Linear and Notion ship disabled. **Logging in enables 
 
 Credentials are stored once in `~/.prime/agent/auth.json` (under `mcp:<name>`); the kernel reads them directly and the host refreshes expired tokens. Enablement is derived from whether valid credentials exist, so there is no separate on/off switch.
 
-**Add your own server.** Declare it under `mcpServers` in settings, then ship a tiny Python skill package that subclasses `McpIntegration`:
+**Add your own server.** Declare it under `mcpServers` in global settings. Standard local stdio servers need no custom Python package:
 
 ```jsonc
 // ~/.prime/agent/settings.json
 {
   "mcpServers": {
-    "acme": { "type": "http", "url": "https://mcp.acme.com/mcp", "oauth": true }
+    "codegraph": {
+      "command": "codegraph",
+      "args": ["mcp"],
+      "disabledTools": ["delete_index"]
+    }
   }
 }
 ```
+
+```python
+import mcp_servers
+server = mcp_servers.get("codegraph")
+await server.list_tools()
+result = await server.call_tool("search", {"query": "McpManager"})
+```
+
+Remote Streamable HTTP declarations use `url` and may add OAuth, bearer-token,
+or static-header configuration. See [docs/mcp-integrations.md](docs/mcp-integrations.md)
+for the full config, tool filters, security boundary, and optional typed wrappers.
 
 ```python
 # ~/.prime/agent/skills/acme/src/acme/__init__.py

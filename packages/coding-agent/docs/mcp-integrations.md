@@ -19,6 +19,7 @@ credentials in `auth.json`.
 ## Table of Contents
 
 - [Using a built-in integration](#using-a-built-in-integration)
+- [Using configured servers](#using-configured-servers)
 - [How a call works](#how-a-call-works)
 - [Authoring your own integration](#authoring-your-own-integration)
   - [1. Declare the server](#1-declare-the-server)
@@ -42,6 +43,53 @@ Built-in integrations (Linear, Notion) ship **disabled**. Logging in enables the
 Credentials are stored once in `~/.prime/agent/auth.json` under `mcp:<name>`.
 Enablement is derived from whether valid credentials exist — there is no separate
 on/off switch.
+
+## Using configured servers
+
+Prime Agent accepts the common `mcpServers` shape in
+`~/.prime/agent/settings.json`. A local stdio server needs no custom Python skill:
+
+```jsonc
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph",
+      "args": ["mcp"],
+      "env": { "LOG_LEVEL": "warn" },
+      "cwd": "/path/to/project",
+      "disabledTools": ["delete_index"]
+    }
+  }
+}
+```
+
+`type: "stdio"` is optional when `command` is present. Remote Streamable HTTP
+servers use `url`; `type: "http"` or `type: "streamable-http"` is optional:
+
+```jsonc
+{
+  "mcpServers": {
+    "public-docs": { "url": "https://example.com/mcp" }
+  }
+}
+```
+
+Use every configured server through the bundled registry:
+
+```python
+import mcp_servers
+
+await mcp_servers.list_servers()
+server = mcp_servers.get("codegraph")
+await server.list_tools()
+result = await server.call_tool("search", {"query": "McpManager"})
+```
+
+`enabledTools` is an allowlist. `disabledTools` always denies matching tools.
+Local stdio commands run directly, without a shell, with the Prime Agent user's
+permissions. Stdio declarations are currently accepted only from the global
+settings file: project-local stdio is ignored until project MCP trust is
+implemented. HTTP project declarations retain their existing behavior.
 
 ## How a call works
 
@@ -94,20 +142,22 @@ Add it under `mcpServers` in `~/.prime/agent/settings.json` (or project
 }
 ```
 
-Currently only remote `"http"` servers are supported by `McpIntegration`. HTTP
-server fields:
+HTTP server fields:
 
 | Field | Meaning |
 |-------|---------|
-| `type` | Must be `"http"` |
+| `type` | Optional `"http"` or `"streamable-http"`; inferred from `url` |
 | `url` | The MCP endpoint |
 | `oauth` | `true` to use the browser OAuth flow (requires the server to support dynamic client registration) |
 | `bearerTokenEnvVar` | Name of an env var holding a static bearer token, instead of OAuth |
 | `headers` | Extra static HTTP headers sent on every request |
 | `enabled` | Set `false` to force-disable even when credentials exist |
+| `enabledTools` | Optional allowlist of tool names |
+| `disabledTools` | Optional denylist of tool names |
 
-> `stdio` (local-subprocess) servers are not yet wired through to the kernel —
-> the host drops non-HTTP entries — so an integration must target an HTTP endpoint.
+For most custom servers, use the generic `mcp_servers` registry instead of
+shipping a package. A Python-backed skill is useful only when you want a typed or
+domain-specific wrapper with its own instructions.
 
 ### 2. Ship the skill package
 
@@ -182,7 +232,8 @@ Imported from `rlm` (`from rlm import McpIntegration`).
 
 Class attributes to set on your subclass:
 
-- `server: str` — required; the `mcpServers` key and `auth.json` credential id.
+- `server: str` — the `mcpServers` key and `auth.json` credential id; pass it to
+  `McpIntegration(server)` for a dynamic configured server or set it on a subclass.
 - `url: str | None` — the remote endpoint (required unless you override
   `_open_session` for a non-HTTP transport).
 - `bearer_token_env: str | None` — optional env var holding a static bearer token.
@@ -233,6 +284,8 @@ the auth mode you configured:
 
 - **Discover before assuming.** Tool names and argument schemas come from the
   server and can change; call `list_tools()` / `help()` rather than hardcoding.
+- **Local process authority.** Stdio MCP servers are executable programs, not a
+  sandbox boundary. Their command and all returned instructions must be trusted.
 - **Custom kernel + name collisions.** The kernel import name is the `server`
   value. On a custom `PRIME_AGENT_KERNEL_PYTHON` that already has an unrelated PyPI
   package of the same name (e.g. `notion`), `import <name>` may resolve to that

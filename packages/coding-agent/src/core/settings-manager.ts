@@ -95,7 +95,8 @@ export type PackageSource =
  */
 export type McpServerConfig =
 	| {
-			type: "http";
+			/** Optional for compatibility with common MCP JSON; inferred from `url`. */
+			type?: "http" | "streamable-http";
 			url: string;
 			headers?: Record<string, string>;
 			/** Env var holding a static bearer token (skips OAuth). */
@@ -108,10 +109,12 @@ export type McpServerConfig =
 			disabledTools?: string[];
 	  }
 	| {
-			type: "stdio";
+			/** Optional for compatibility with Claude Code, Codex, and VS Code configs. */
+			type?: "stdio";
 			command: string;
 			args?: string[];
 			env?: Record<string, string>;
+			cwd?: string;
 			enabled?: boolean;
 			enabledTools?: string[];
 			disabledTools?: string[];
@@ -1260,6 +1263,27 @@ export class SettingsManager {
 
 	getMcpServers(): Record<string, McpServerConfig> | undefined {
 		return this.settings.mcpServers;
+	}
+
+	/**
+	 * MCP declarations safe to execute in the current runtime.
+	 *
+	 * Project HTTP declarations retain the existing behavior. Project stdio
+	 * declarations are excluded until the project-trust boundary lands; otherwise
+	 * merely opening a repository could make an agent spawn an arbitrary command.
+	 */
+	getRuntimeMcpServers(): Record<string, McpServerConfig> | undefined {
+		const globalServers = this.globalSettings.mcpServers ?? {};
+		const projectServers = this.projectSettings.mcpServers ?? {};
+		const runtimeServers: Record<string, McpServerConfig> = { ...globalServers };
+
+		for (const [server, config] of Object.entries(projectServers)) {
+			const type = config.type ?? ("command" in config ? "stdio" : "http");
+			if (type === "stdio") continue;
+			runtimeServers[server] = config;
+		}
+
+		return Object.keys(runtimeServers).length > 0 ? runtimeServers : undefined;
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {

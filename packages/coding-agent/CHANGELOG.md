@@ -6,6 +6,7 @@
 - Changed `Ctrl+C` to clear a nonempty idle prompt before offering to exit.
 - Added `/approvals`: model-based action gating (auto mode). A separate approval model reviews every tool call before it runs, using a fast single-token filter with a reasoning pass only for flagged actions, and a reasoning-blind transcript (user messages and tool calls only). Configure the mode, approval model, which tools are gated (multi-select), and what happens when the reviewer is unsure (`ask`, `block`, or `allow`) from the panel or with `/approvals [status|off|on|ask|block|allow]`. A refused call hands the reviewer's reason back to the agent instead of prompting. Defaults to off.
 - Removed the outdated extra-usage warning for Anthropic subscription auth.
+- Added standard `mcpServers` support for local stdio and remote Streamable HTTP servers through one bundled Python registry, without requiring a custom skill package per server.
 
 ## [0.7.2] - 2026-08-11
 

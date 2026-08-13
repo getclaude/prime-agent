@@ -501,6 +501,32 @@ describe("SettingsManager", () => {
 			// Project override replaces the shared entry.
 			expect(servers?.shared).toEqual({ type: "http", url: "https://project.shared/mcp" });
 		});
+
+		it("executes global stdio declarations but excludes project stdio declarations", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					mcpServers: {
+						globalStdio: { command: "global-server", args: ["--stdio"] },
+						remote: { url: "https://global.example/mcp" },
+					},
+				}),
+			);
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({
+					mcpServers: {
+						projectStdio: { command: "untrusted-server" },
+						remote: { url: "https://project.example/mcp" },
+					},
+				}),
+			);
+
+			const servers = SettingsManager.create(projectDir, agentDir).getRuntimeMcpServers();
+			expect(servers?.globalStdio).toEqual({ command: "global-server", args: ["--stdio"] });
+			expect(servers?.projectStdio).toBeUndefined();
+			expect(servers?.remote).toEqual({ url: "https://project.example/mcp" });
+		});
 	});
 	describe("idle worker eviction", () => {
 		it("defaults to 90 minutes and treats none as off", () => {
