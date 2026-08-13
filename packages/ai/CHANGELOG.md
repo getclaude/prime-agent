@@ -5,6 +5,8 @@
 - Fixed Anthropic Claude Pro/Max OAuth requests being billed against "extra usage" credits instead of the subscription plan by sending the signed Claude Code billing header, keeping the Claude Code identity and entrypoint in `system[]`, and identifying requests as `sdk-cli` with the matching Stainless headers, query flag, and OAuth beta flags.
 - Added a classifier-safe Prime Agent system prompt for Claude subscription requests on Opus 5 and Fable 5 that preserves the native RLM/IPython core in `system[]` and the complete dynamic host context in the first user turn; other models and API-key auth are unchanged.
 
+## [0.7.2] - 2026-08-11
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
