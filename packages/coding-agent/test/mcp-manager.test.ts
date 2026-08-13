@@ -72,10 +72,10 @@ describe("McpManager", () => {
 		expect(getOAuthProvider("mcp:acme")).toBeDefined();
 	});
 
-	it("exposes only mcp.refresh when no interactive login is wired", async () => {
+	it("exposes kernel MCP handlers without interactive login", async () => {
 		const manager = new McpManager({ authStorage });
 		const handlers = manager.hostHandlers();
-		expect(Object.keys(handlers).sort()).toEqual(["mcp.config", "mcp.refresh"]);
+		expect(Object.keys(handlers).sort()).toEqual(["mcp.config", "mcp.list_configured", "mcp.refresh"]);
 
 		// refresh with no credentials fails (so the kernel reports a refresh error,
 		// not a false success), and a missing server arg is rejected.
@@ -92,7 +92,12 @@ describe("McpManager", () => {
 			},
 		});
 		const handlers = manager.hostHandlers();
-		expect(Object.keys(handlers).sort()).toEqual(["mcp.begin_login", "mcp.config", "mcp.refresh"]);
+		expect(Object.keys(handlers).sort()).toEqual([
+			"mcp.begin_login",
+			"mcp.config",
+			"mcp.list_configured",
+			"mcp.refresh",
+		]);
 		await handlers["mcp.begin_login"]({ server: "linear" });
 		expect(called).toBe("linear");
 	});
@@ -106,10 +111,61 @@ describe("McpManager", () => {
 		});
 		const handlers = manager.hostHandlers();
 		expect(await handlers["mcp.config"]({ server: "linear" })).toEqual({
+			type: "http",
+			enabled: true,
 			url: "https://proxy.test/mcp",
 			headers: { "X-Extra": "1" },
+			requiresAuth: true,
+			allowStoredCredentials: false,
 		});
-		expect(await handlers["mcp.config"]({ server: "notion" })).toEqual({ url: "https://mcp.notion.com/mcp" });
+		expect(await handlers["mcp.config"]({ server: "notion" })).toEqual({
+			type: "http",
+			enabled: true,
+			url: "https://mcp.notion.com/mcp",
+			requiresAuth: true,
+			allowStoredCredentials: true,
+		});
+	});
+
+	it("infers and exposes standard stdio declarations without OAuth", async () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({
+				codegraph: {
+					command: "codegraph",
+					args: ["mcp"],
+					env: { LOG_LEVEL: "warn" },
+					cwd: "/workspace",
+					disabledTools: ["delete_index"],
+				},
+			}),
+		});
+		const handlers = manager.hostHandlers();
+		expect(await handlers["mcp.config"]({ server: "codegraph" })).toEqual({
+			type: "stdio",
+			enabled: true,
+			command: "codegraph",
+			args: ["mcp"],
+			env: { LOG_LEVEL: "warn" },
+			cwd: "/workspace",
+			disabledTools: ["delete_index"],
+		});
+		expect(await handlers["mcp.list_configured"]({})).toEqual({
+			servers: [{ server: "codegraph", type: "stdio" }],
+		});
+		expect(manager.listStatus().find((status) => status.server === "codegraph")).toMatchObject({
+			type: "stdio",
+			enabled: true,
+			usesOAuth: false,
+		});
+	});
+
+	it("treats anonymous HTTP servers as enabled", () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({ public: { url: "https://example.test/mcp" } }),
+		});
+		expect(manager.listStatus().find((status) => status.server === "public")?.enabled).toBe(true);
 	});
 
 	it("does not treat an oauth override of a catalog name as authed via the official stored cred", () => {

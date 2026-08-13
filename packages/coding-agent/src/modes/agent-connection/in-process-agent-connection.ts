@@ -29,6 +29,7 @@ import {
 import { createAgentConnectionToolDefinition } from "./tool-definition.js";
 import type {
 	AgentConnection,
+	AgentConnectionApprovalPrompter,
 	AgentConnectionBeforeSessionInvalidateListener,
 	AgentConnectionEvent,
 	AgentConnectionEventListener,
@@ -288,6 +289,10 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async setSessionEntryLabel(entryId: string, label: string | undefined): Promise<void> {
 		this.session.sessionManager.appendLabelChange(entryId, label);
+	}
+
+	setApprovalPrompter(prompter: AgentConnectionApprovalPrompter | undefined): void {
+		this.session.setApprovalPrompter(prompter);
 	}
 
 	async respondToExtensionUiRequest(_requestId: string, _response: AgentConnectionExtensionUiResponse): Promise<void> {

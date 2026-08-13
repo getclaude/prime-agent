@@ -113,7 +113,7 @@ export const TUI_KEYBINDINGS = {
 		defaultKeyScope: "editor",
 	},
 	"tui.editor.deleteWordBackward": {
-		defaultKeys: ["ctrl+w", "alt+backspace"],
+		defaultKeys: ["ctrl+w", "ctrl+backspace", "alt+backspace"],
 		description: "Delete word backward",
 		defaultKeyScope: "editor",
 	},
@@ -136,7 +136,7 @@ export const TUI_KEYBINDINGS = {
 	"tui.editor.yankPop": { defaultKeys: "alt+y", description: "Yank pop", defaultKeyScope: "editor" },
 	"tui.editor.undo": { defaultKeys: "ctrl+-", description: "Undo", defaultKeyScope: "editor" },
 	"tui.input.newLine": {
-		defaultKeys: "shift+enter",
+		defaultKeys: ["shift+enter", "ctrl+j"],
 		description: "Insert newline",
 		defaultKeyScope: "editor",
 	},

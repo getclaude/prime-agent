@@ -28,7 +28,7 @@ Use `/logout` to clear credentials. Tokens are stored in `~/.prime/agent/auth.js
 
 ### Claude Pro/Max
 
-Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
+Anthropic subscription auth uses Claude Pro/Max plan limits.
 
 ### GitHub Copilot
 

@@ -632,6 +632,13 @@ export type AgentConnectionEvent =
 export type AgentConnectionEventListener = (event: AgentConnectionEvent) => void | Promise<void>;
 export type AgentConnectionBeforeSessionInvalidateListener = () => void;
 
+/** Asks the user to approve one tool call; resolves true to allow it. */
+export type AgentConnectionApprovalPrompter = (request: {
+	toolName: string;
+	args: unknown;
+	reason?: string;
+}) => Promise<boolean>;
+
 export interface AgentConnection {
 	subscribe(listener: AgentConnectionEventListener): () => void;
 	onBeforeSessionInvalidate(listener: AgentConnectionBeforeSessionInvalidateListener): () => void;
@@ -689,6 +696,13 @@ export interface AgentConnection {
 	getToolDefinition(name: string): Promise<AgentConnectionToolDefinition | undefined>;
 	setSessionEntryLabel(entryId: string, label: string | undefined): Promise<void>;
 	respondToExtensionUiRequest(requestId: string, response: AgentConnectionExtensionUiResponse): Promise<void>;
+	/**
+	 * Attach a human approver for the approvals subsystem.
+	 *
+	 * Only available when the session runs in-process; over the daemon the
+	 * approvals engine uses its configured unattended fallback instead.
+	 */
+	setApprovalPrompter?(prompter: AgentConnectionApprovalPrompter | undefined): void;
 
 	prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void>;
 	promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void>;

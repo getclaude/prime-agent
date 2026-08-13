@@ -4,6 +4,8 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import type { ApprovalMode, ApprovalSettings, ApprovalUnsureAction } from "./approvals.js";
+import { resolveApprovalSettings } from "./approvals.js";
 
 const RECENT_MODELS_LIMIT = 20;
 export const DEFAULT_IDLE_EVICTION_MINUTES = 90;
@@ -68,10 +70,6 @@ export interface BundledSkillsSettings {
 	websearch?: boolean; // default: true
 }
 
-export interface WarningSettings {
-	anthropicExtraUsage?: boolean; // default: true
-}
-
 export type TransportSetting = Transport;
 
 /**
@@ -97,7 +95,8 @@ export type PackageSource =
  */
 export type McpServerConfig =
 	| {
-			type: "http";
+			/** Optional for compatibility with common MCP JSON; inferred from `url`. */
+			type?: "http" | "streamable-http";
 			url: string;
 			headers?: Record<string, string>;
 			/** Env var holding a static bearer token (skips OAuth). */
@@ -110,10 +109,12 @@ export type McpServerConfig =
 			disabledTools?: string[];
 	  }
 	| {
-			type: "stdio";
+			/** Optional for compatibility with Claude Code, Codex, and VS Code configs. */
+			type?: "stdio";
 			command: string;
 			args?: string[];
 			env?: Record<string, string>;
+			cwd?: string;
 			enabled?: boolean;
 			enabledTools?: string[];
 			disabledTools?: string[];
@@ -139,6 +140,7 @@ export interface Settings {
 	telemetry?: TelemetrySettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	approvals?: ApprovalSettings; // model-based action gating ("auto mode")
 	hideThinkingBlock?: boolean;
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
@@ -162,7 +164,6 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
-	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 }
 
@@ -937,6 +938,45 @@ export class SettingsManager {
 		};
 	}
 
+	// -------------------------------------------------------------------
+	// Approvals (model-based action gating)
+	// -------------------------------------------------------------------
+
+	getApprovalSettings(): Required<ApprovalSettings> {
+		return resolveApprovalSettings(this.settings.approvals);
+	}
+
+	private ensureApprovals(): ApprovalSettings {
+		if (!this.globalSettings.approvals) {
+			this.globalSettings.approvals = {};
+		}
+		return this.globalSettings.approvals;
+	}
+
+	setApprovalMode(mode: ApprovalMode): void {
+		this.ensureApprovals().mode = mode;
+		this.markModified("approvals", "mode");
+		this.save();
+	}
+
+	setApprovalModel(model: string): void {
+		this.ensureApprovals().model = model;
+		this.markModified("approvals", "model");
+		this.save();
+	}
+
+	setApprovalTools(tools: string[]): void {
+		this.ensureApprovals().tools = tools;
+		this.markModified("approvals", "tools");
+		this.save();
+	}
+
+	setApprovalWhenUnsure(action: ApprovalUnsureAction): void {
+		this.ensureApprovals().whenUnsure = action;
+		this.markModified("approvals", "whenUnsure");
+		this.save();
+	}
+
 	getHideThinkingBlock(): boolean {
 		return this.settings.hideThinkingBlock ?? false;
 	}
@@ -1225,6 +1265,27 @@ export class SettingsManager {
 		return this.settings.mcpServers;
 	}
 
+	/**
+	 * MCP declarations safe to execute in the current runtime.
+	 *
+	 * Project HTTP declarations retain the existing behavior. Project stdio
+	 * declarations are excluded until the project-trust boundary lands; otherwise
+	 * merely opening a repository could make an agent spawn an arbitrary command.
+	 */
+	getRuntimeMcpServers(): Record<string, McpServerConfig> | undefined {
+		const globalServers = this.globalSettings.mcpServers ?? {};
+		const projectServers = this.projectSettings.mcpServers ?? {};
+		const runtimeServers: Record<string, McpServerConfig> = { ...globalServers };
+
+		for (const [server, config] of Object.entries(projectServers)) {
+			const type = config.type ?? ("command" in config ? "stdio" : "http");
+			if (type === "stdio") continue;
+			runtimeServers[server] = config;
+		}
+
+		return Object.keys(runtimeServers).length > 0 ? runtimeServers : undefined;
+	}
+
 	setEnabledModels(patterns: string[] | undefined): void {
 		this.globalSettings.enabledModels = patterns;
 		this.markModified("enabledModels");
@@ -1275,15 +1336,5 @@ export class SettingsManager {
 
 	getCodeBlockIndent(): string {
 		return this.settings.markdown?.codeBlockIndent ?? "  ";
-	}
-
-	getWarnings(): WarningSettings {
-		return { ...(this.settings.warnings ?? {}) };
-	}
-
-	setWarnings(warnings: WarningSettings): void {
-		this.globalSettings.warnings = { ...warnings };
-		this.markModified("warnings");
-		this.save();
 	}
 }

@@ -54,38 +54,6 @@ export type AuthenticationResult =
 
 export const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 
-export const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
-	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage.";
-
-function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
-	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
-}
-
-/** Returns the extra-usage warning when the given model would run on Anthropic subscription auth. */
-export async function getAnthropicSubscriptionAuthWarning(
-	modelRegistry: ModelRegistry,
-	model: { provider: string } | undefined,
-): Promise<string | undefined> {
-	if (!model || model.provider !== "anthropic") {
-		return undefined;
-	}
-
-	const storedCredential = modelRegistry.authStorage.get("anthropic");
-	if (storedCredential?.type === "oauth") {
-		return ANTHROPIC_SUBSCRIPTION_AUTH_WARNING;
-	}
-
-	try {
-		const apiKey = await modelRegistry.getApiKeyForProvider(model.provider);
-		if (isAnthropicSubscriptionAuthKey(apiKey)) {
-			return ANTHROPIC_SUBSCRIPTION_AUTH_WARNING;
-		}
-	} catch {
-		// Ignore auth lookup failures for warning-only checks.
-	}
-	return undefined;
-}
-
 const BUILT_IN_MODEL_PROVIDERS = new Set<string>(getProviders());
 
 export function isApiKeyLoginProvider(

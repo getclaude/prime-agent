@@ -45,7 +45,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 |--------|---------|-------------|
 | `tui.editor.deleteCharBackward` | `backspace` | Delete character backward |
 | `tui.editor.deleteCharForward` | `delete`, `ctrl+d` | Delete character forward |
-| `tui.editor.deleteWordBackward` | `ctrl+w`, `alt+backspace` | Delete word backward |
+| `tui.editor.deleteWordBackward` | `ctrl+w`, `ctrl+backspace`, `alt+backspace` | Delete word backward |
 | `tui.editor.deleteWordForward` | `alt+d`, `alt+delete` | Delete word forward |
 | `tui.editor.deleteToLineStart` | `ctrl+u` | Delete to line start |
 | `tui.editor.deleteToLineEnd` | `ctrl+k` | Delete to line end |
@@ -54,7 +54,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `tui.input.newLine` | `shift+enter` | Insert new line |
+| `tui.input.newLine` | `shift+enter`, `ctrl+j` | Insert new line |
 | `tui.input.submit` | `enter` | Submit input |
 | `tui.input.tab` | `tab` | Tab / autocomplete |
 

@@ -94,20 +94,6 @@ prime-agent --offline
 
 `PRIME_AGENT_TELEMETRY_ENDPOINT` overrides the ingestion endpoint for development and self-hosted deployments.
 
-### Warnings
-
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `warnings.anthropicExtraUsage` | boolean | `true` | Show a warning when Anthropic subscription auth may use paid extra usage |
-
-```json
-{
-  "warnings": {
-    "anthropicExtraUsage": false
-  }
-}
-```
-
 ### Compaction
 
 | Setting | Type | Default | Description |
@@ -307,9 +293,6 @@ See [packages.md](packages.md) for package management details.
     "maxRetries": 3
   },
   "enabledModels": ["claude-*", "gpt-4o"],
-  "warnings": {
-    "anthropicExtraUsage": true
-  },
   "packages": ["pi-skills"]
 }
 ```
